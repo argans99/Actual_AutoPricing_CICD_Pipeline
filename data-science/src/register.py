@@ -8,71 +8,67 @@ import argparse
 import json
 import os
 
-import mlflow
-import mlflow.sklearn
+from azure.ai.ml import MLClient
+from azure.ai.ml.entities import Model
+from azure.identity import DefaultAzureCredential
 
 
 def parse_args():
     """Parse input arguments."""
-
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, help="Name under which model will be registered")
-    parser.add_argument("--model_path", type=str, help="Model directory")
-    parser.add_argument("--model_info_output_path", type=str, help="Path to write model info JSON")
+
+    parser.add_argument("--model_name", type=str, required=True)
+    parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument("--model_info_output_path", type=str, required=True)
 
     args, _ = parser.parse_known_args()
     print(f"Arguments: {args}")
-
     return args
 
 
 def main(args):
-    """Loads the best-trained model from the sweep job and registers it."""
+    """Register the trained MLflow model in Azure ML."""
 
-    print("Registering ", args.model_name)
+    print(f"Registering model: {args.model_name}")
+    print(f"Model path: {args.model_path}")
 
-    # Load model
-    model = mlflow.sklearn.load_model(args.model_path)
-
-    # Log model using MLflow
-    mlflow.sklearn.log_model(
-        sk_model=model,
-        artifact_path=args.model_name,
+    ml_client = MLClient(
+        DefaultAzureCredential(),
+        subscription_id=os.environ["AZUREML_ARM_SUBSCRIPTION"],
+        resource_group_name=os.environ["AZUREML_ARM_RESOURCEGROUP"],
+        workspace_name=os.environ["AZUREML_ARM_WORKSPACE_NAME"],
     )
 
-    # Register logged model using MLflow
-    run_id = mlflow.active_run().info.run_id
-    model_uri = f"runs:/{run_id}/{args.model_name}"
+    registered_model = ml_client.models.create_or_update(
+        Model(
+            path=args.model_path,
+            name=args.model_name,
+            type="mlflow_model",
+            description="Used cars price prediction model trained from Azure ML pipeline",
+        )
+    )
 
-    mlflow_model = mlflow.register_model(model_uri, args.model_name)
-    model_version = mlflow_model.version
+    model_version = registered_model.version
+    print(f"Registered model: {args.model_name}")
+    print(f"Registered model version: {model_version}")
 
-    # Write model info
-    print("Writing JSON")
     os.makedirs(args.model_info_output_path, exist_ok=True)
 
-    model_info = {"id": f"{args.model_name}:{model_version}"}
+    model_info = {
+        "id": f"{args.model_name}:{model_version}",
+        "name": args.model_name,
+        "version": model_version,
+        "path": args.model_path,
+    }
+
     output_path = os.path.join(args.model_info_output_path, "model_info.json")
 
     with open(output_path, "w") as of:
         json.dump(model_info, of)
 
+    print(f"Model info written to: {output_path}")
+
 
 if __name__ == "__main__":
-
-    mlflow.start_run()
-
     args = parse_args()
-
-    lines = [
-        f"Model name: {args.model_name}",
-        f"Model path: {args.model_path}",
-        f"Model info output path: {args.model_info_output_path}",
-    ]
-
-    for line in lines:
-        print(line)
-
     main(args)
-
-    mlflow.end_run()
